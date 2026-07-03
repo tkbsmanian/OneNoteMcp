@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test/coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.hypothesis/
+
+# Token cache (contains encrypted secrets)
+token_cache.bin
+
+# Environment files
+.env
+.env.local

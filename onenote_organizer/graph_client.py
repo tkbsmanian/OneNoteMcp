@@ -1,0 +1,365 @@
+"""Microsoft Graph client for OneNote operations.
+
+Provides an async client that handles authenticated requests, pagination,
+and error mapping for all OneNote Graph API endpoints.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+
+import httpx
+
+from onenote_organizer.auth import AuthProvider
+from onenote_organizer.models import (
+    GraphError,
+    NetworkError,
+    Notebook,
+    OperationResult,
+    PageMetadata,
+    Section,
+)
+
+
+class GraphClient:
+    """Async Microsoft Graph client for OneNote operations."""
+
+    BASE_URL = "https://graph.microsoft.com/v1.0"
+
+    def __init__(self, auth_provider: AuthProvider) -> None:
+        """Initialize the Graph client.
+
+        Args:
+            auth_provider: An object implementing the AuthProvider protocol
+                that provides access tokens for Graph API requests.
+        """
+        self._auth = auth_provider
+        self._client = httpx.AsyncClient(timeout=30.0)
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Execute an authenticated request with error mapping.
+
+        Injects the Bearer token into the Authorization header and maps
+        httpx exceptions to domain-specific errors.
+
+        Args:
+            method: HTTP method (GET, POST, PATCH, etc.)
+            url: Full URL for the request.
+            **kwargs: Additional arguments passed to httpx.
+
+        Returns:
+            The httpx.Response on success.
+
+        Raises:
+            GraphError: If the Graph API returns an HTTP error status.
+            NetworkError: If a timeout or connection error occurs.
+        """
+        token = await self._auth.get_access_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+
+        try:
+            response = await self._client.request(
+                method, url, headers=headers, **kwargs
+            )
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as exc:
+            # Extract error message from Graph API response if available
+            message = "Microsoft Graph API error"
+            try:
+                error_body = exc.response.json()
+                if "error" in error_body:
+                    message = error_body["error"].get("message", message)
+            except (ValueError, KeyError):
+                message = exc.response.text or message
+            raise GraphError(
+                message=message,
+                status_code=exc.response.status_code,
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise NetworkError(
+                "Microsoft Graph service could not be reached: request timed out"
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise NetworkError(
+                "Microsoft Graph service could not be reached: connection failed"
+            ) from exc
+
+    async def _paginated_get(self, url: str) -> list[dict]:
+        """Follow @odata.nextLink until all results are retrieved.
+
+        Args:
+            url: The initial URL to request.
+
+        Returns:
+            A list of all items collected across all pages.
+        """
+        items: list[dict] = []
+        next_url: str | None = url
+
+        while next_url is not None:
+            response = await self._request("GET", next_url)
+            data = response.json()
+            items.extend(data.get("value", []))
+            next_url = data.get("@odata.nextLink")
+
+        return items
+
+    async def list_notebooks(self) -> list[Notebook]:
+        """List all notebooks for the authenticated user.
+
+        Returns:
+            A list of Notebook objects with id and display_name.
+        """
+        url = f"{self.BASE_URL}/me/onenote/notebooks"
+        items = await self._paginated_get(url)
+        return [
+            Notebook(id=item["id"], display_name=item["displayName"])
+            for item in items
+        ]
+
+    async def list_sections(self, notebook_id: str) -> list[Section]:
+        """List all sections in a specific notebook.
+
+        Args:
+            notebook_id: The ID of the notebook to query.
+
+        Returns:
+            A list of Section objects with id, display_name, and notebook_id.
+        """
+        url = f"{self.BASE_URL}/me/onenote/notebooks/{notebook_id}/sections"
+        items = await self._paginated_get(url)
+        return [
+            Section(
+                id=item["id"],
+                display_name=item["displayName"],
+                notebook_id=item.get("parentNotebook", {}).get("id", notebook_id),
+            )
+            for item in items
+        ]
+
+    async def list_pages(self, section_id: str) -> list[PageMetadata]:
+        """List all pages in a specific section.
+
+        Args:
+            section_id: The ID of the section to query.
+
+        Returns:
+            A list of PageMetadata objects with id, title, last_modified, and section_id.
+        """
+        url = f"{self.BASE_URL}/me/onenote/sections/{section_id}/pages"
+        items = await self._paginated_get(url)
+        return [
+            PageMetadata(
+                id=item["id"],
+                title=item.get("title", ""),
+                last_modified=datetime.fromisoformat(
+                    item["lastModifiedDateTime"]
+                ),
+                section_id=item.get("parentSection", {}).get("id", section_id),
+            )
+            for item in items
+        ]
+
+    async def get_page_content(self, page_id: str) -> str:
+        """Get the HTML content of a specific page.
+
+        Args:
+            page_id: The ID of the page to retrieve content for.
+
+        Returns:
+            The page content as an HTML string.
+        """
+        url = f"{self.BASE_URL}/me/onenote/pages/{page_id}/content"
+        response = await self._request("GET", url)
+        return response.text
+
+    async def get_page_metadata(self, page_id: str) -> PageMetadata:
+        """Get metadata for a specific page.
+
+        Args:
+            page_id: The ID of the page.
+
+        Returns:
+            A PageMetadata object with the page's id, title, last_modified, and section_id.
+        """
+        url = f"{self.BASE_URL}/me/onenote/pages/{page_id}"
+        response = await self._request("GET", url)
+        item = response.json()
+        return PageMetadata(
+            id=item["id"],
+            title=item.get("title", ""),
+            last_modified=datetime.fromisoformat(item["lastModifiedDateTime"]),
+            section_id=item.get("parentSection", {}).get("id"),
+        )
+
+    async def get_section_metadata(self, section_id: str) -> Section:
+        """Get metadata for a specific section.
+
+        Args:
+            section_id: The ID of the section.
+
+        Returns:
+            A Section object with the section's id, display_name, and notebook_id.
+        """
+        url = f"{self.BASE_URL}/me/onenote/sections/{section_id}"
+        response = await self._request("GET", url)
+        item = response.json()
+        return Section(
+            id=item["id"],
+            display_name=item["displayName"],
+            notebook_id=item.get("parentNotebook", {}).get("id"),
+        )
+
+    async def copy_page_to_section(self, page_id: str, target_section_id: str) -> str:
+        """Copy a page to a different section (used as move since Graph has no native move).
+
+        POSTs to /me/onenote/pages/{id}/copyToSection with the target section ID.
+        Returns the operation URL for polling the long-running operation status.
+
+        Args:
+            page_id: The ID of the page to copy.
+            target_section_id: The ID of the destination section.
+
+        Returns:
+            The operation URL string for polling the copy status.
+
+        Raises:
+            GraphError: If the Graph API returns an HTTP error status.
+            NetworkError: If a timeout or connection error occurs.
+        """
+        url = f"{self.BASE_URL}/me/onenote/pages/{page_id}/copyToSection"
+        body = {"id": target_section_id}
+        response = await self._request("POST", url, json=body)
+
+        # The operation URL may be in the response body or the Operation-Location header
+        operation_url = response.headers.get("Operation-Location", "")
+        if not operation_url:
+            # Try to extract from response body
+            try:
+                data = response.json()
+                operation_url = data.get("uri", "") or data.get("id", "")
+            except (ValueError, KeyError):
+                pass
+
+        return operation_url
+
+    async def poll_operation(self, operation_url: str) -> OperationResult:
+        """Poll a long-running operation until complete or failed.
+
+        Uses exponential backoff starting at 1s, doubling each time
+        (1s, 2s, 4s, 8s, ...) with a maximum total wait of 60s.
+
+        Args:
+            operation_url: The URL returned by a long-running operation (e.g., copyToSection).
+
+        Returns:
+            An OperationResult with status "completed" or "failed",
+            and optionally a resource_id or error_message.
+        """
+        delay = 1.0
+        total_waited = 0.0
+        max_wait = 60.0
+
+        while total_waited < max_wait:
+            await asyncio.sleep(delay)
+            total_waited += delay
+
+            try:
+                response = await self._request("GET", operation_url)
+                data = response.json()
+            except GraphError as exc:
+                return OperationResult(
+                    status="failed",
+                    error_message=str(exc),
+                )
+            except NetworkError as exc:
+                return OperationResult(
+                    status="failed",
+                    error_message=str(exc),
+                )
+
+            status = data.get("status", "").lower()
+
+            if status == "completed":
+                resource_id = data.get("resourceId") or data.get("resourceLocation", "")
+                return OperationResult(
+                    status="completed",
+                    resource_id=resource_id if resource_id else None,
+                )
+            elif status == "failed":
+                error_msg = data.get("error", {}).get("message", "Operation failed")
+                return OperationResult(
+                    status="failed",
+                    error_message=error_msg,
+                )
+
+            # Double the delay for next iteration (exponential backoff)
+            delay = min(delay * 2, max_wait - total_waited) if total_waited < max_wait else delay
+
+        # Timed out waiting for completion
+        return OperationResult(
+            status="failed",
+            error_message="Operation timed out after 60 seconds",
+        )
+
+    async def update_page_title(self, page_id: str, new_title: str) -> None:
+        """Update the title of a page via PATCH.
+
+        Uses the OneNote PATCH content API to replace the page title.
+
+        Args:
+            page_id: The ID of the page to update.
+            new_title: The new title for the page.
+
+        Raises:
+            GraphError: If the Graph API returns an HTTP error status.
+            NetworkError: If a timeout or connection error occurs.
+        """
+        url = f"{self.BASE_URL}/me/onenote/pages/{page_id}/content"
+        # OneNote PATCH content format: array of patch actions
+        patch_body = [
+            {
+                "target": "title",
+                "action": "replace",
+                "content": new_title,
+            }
+        ]
+        await self._request(
+            "PATCH",
+            url,
+            json=patch_body,
+            headers={"Content-Type": "application/json"},
+        )
+
+    async def create_section(self, notebook_id: str, display_name: str) -> Section:
+        """Create a new section in a notebook.
+
+        POSTs to /me/onenote/notebooks/{id}/sections with the display name.
+
+        Args:
+            notebook_id: The ID of the notebook to create the section in.
+            display_name: The display name for the new section.
+
+        Returns:
+            A Section object representing the newly created section.
+
+        Raises:
+            GraphError: If the Graph API returns an HTTP error status.
+            NetworkError: If a timeout or connection error occurs.
+        """
+        url = f"{self.BASE_URL}/me/onenote/notebooks/{notebook_id}/sections"
+        body = {"displayName": display_name}
+        response = await self._request("POST", url, json=body)
+        item = response.json()
+        return Section(
+            id=item["id"],
+            display_name=item["displayName"],
+            notebook_id=item.get("parentNotebook", {}).get("id", notebook_id),
+        )
