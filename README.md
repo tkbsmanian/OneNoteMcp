@@ -23,7 +23,7 @@ graph TD
     end
 
     subgraph "MCP Server Process"
-        Transport[Transport Layer<br/>stdio | HTTP/SSE]
+        Transport["Transport Layer<br/>stdio / HTTP+SSE"]
         Server[FastMCP Server]
         Tools[Tool Implementations]
         Auth[Auth Module<br/>Device Code Flow]

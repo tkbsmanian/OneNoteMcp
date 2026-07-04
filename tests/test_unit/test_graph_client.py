@@ -8,13 +8,21 @@ Requirements: 4.4, 5.4, 15.1, 15.5
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 import respx
 
 from onenote_organizer.auth import AuthProvider
 from onenote_organizer.graph_client import GraphClient
-from onenote_organizer.models import GraphError, NetworkError
+from onenote_organizer.models import (
+    GraphError,
+    NetworkError,
+    Notebook,
+    PageMetadata,
+    Section,
+)
 
 
 # --- Mock Auth Provider ---
@@ -344,3 +352,151 @@ class TestAuthHeaderInjection:
         assert route.called
         request = route.calls[0].request
         assert request.headers["Authorization"] == "Bearer my-secret-token"
+
+
+# --- Typed Model Response Tests ---
+
+
+class TestListNotebooks:
+    """Test list_notebooks returns correct Notebook objects with pagination."""
+
+    @pytest.fixture
+    def client(self):
+        auth = MockAuthProvider(token="test-token")
+        return GraphClient(auth)
+
+    @respx.mock
+    async def test_list_notebooks_multi_page(self, client: GraphClient):
+        """list_notebooks with 2-page response returns all Notebook objects."""
+        base_url = f"{client.BASE_URL}/me/onenote/notebooks"
+        next_url = f"{base_url}?$skiptoken=page2"
+
+        # First page
+        respx.get(base_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"id": "nb-1", "displayName": "Work"},
+                        {"id": "nb-2", "displayName": "Personal"},
+                    ],
+                    "@odata.nextLink": next_url,
+                },
+            )
+        )
+
+        # Second page
+        respx.get(next_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"id": "nb-3", "displayName": "Archive"},
+                    ],
+                },
+            )
+        )
+
+        notebooks = await client.list_notebooks()
+
+        assert len(notebooks) == 3
+        assert all(isinstance(nb, Notebook) for nb in notebooks)
+        assert notebooks[0] == Notebook(id="nb-1", display_name="Work")
+        assert notebooks[1] == Notebook(id="nb-2", display_name="Personal")
+        assert notebooks[2] == Notebook(id="nb-3", display_name="Archive")
+
+
+class TestListSections:
+    """Test list_sections returns correct Section objects."""
+
+    @pytest.fixture
+    def client(self):
+        auth = MockAuthProvider(token="test-token")
+        return GraphClient(auth)
+
+    @respx.mock
+    async def test_list_sections_returns_section_objects(self, client: GraphClient):
+        """list_sections returns Section objects with correct fields."""
+        notebook_id = "nb-123"
+        url = f"{client.BASE_URL}/me/onenote/notebooks/{notebook_id}/sections"
+
+        respx.get(url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "sec-1",
+                            "displayName": "Meetings",
+                            "parentNotebook": {"id": "nb-123"},
+                        },
+                        {
+                            "id": "sec-2",
+                            "displayName": "Projects",
+                            "parentNotebook": {"id": "nb-123"},
+                        },
+                    ],
+                },
+            )
+        )
+
+        sections = await client.list_sections(notebook_id)
+
+        assert len(sections) == 2
+        assert all(isinstance(s, Section) for s in sections)
+        assert sections[0] == Section(
+            id="sec-1", display_name="Meetings", notebook_id="nb-123"
+        )
+        assert sections[1] == Section(
+            id="sec-2", display_name="Projects", notebook_id="nb-123"
+        )
+
+
+class TestListPages:
+    """Test list_pages returns correct PageMetadata objects."""
+
+    @pytest.fixture
+    def client(self):
+        auth = MockAuthProvider(token="test-token")
+        return GraphClient(auth)
+
+    @respx.mock
+    async def test_list_pages_returns_page_metadata_objects(self, client: GraphClient):
+        """list_pages returns PageMetadata objects with correct fields."""
+        section_id = "sec-456"
+        url = f"{client.BASE_URL}/me/onenote/sections/{section_id}/pages"
+
+        respx.get(url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "pg-1",
+                            "title": "Sprint Planning",
+                            "lastModifiedDateTime": "2024-06-15T10:30:00Z",
+                            "parentSection": {"id": "sec-456"},
+                        },
+                        {
+                            "id": "pg-2",
+                            "title": "Retrospective",
+                            "lastModifiedDateTime": "2024-06-16T14:00:00+00:00",
+                            "parentSection": {"id": "sec-456"},
+                        },
+                    ],
+                },
+            )
+        )
+
+        pages = await client.list_pages(section_id)
+
+        assert len(pages) == 2
+        assert all(isinstance(p, PageMetadata) for p in pages)
+        assert pages[0].id == "pg-1"
+        assert pages[0].title == "Sprint Planning"
+        assert pages[0].section_id == "sec-456"
+        assert isinstance(pages[0].last_modified, datetime)
+        assert pages[1].id == "pg-2"
+        assert pages[1].title == "Retrospective"
+        assert pages[1].section_id == "sec-456"
+        assert isinstance(pages[1].last_modified, datetime)

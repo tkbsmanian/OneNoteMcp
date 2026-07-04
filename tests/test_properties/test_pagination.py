@@ -10,54 +10,30 @@ Validates: Requirements 4.1, 5.1, 6.1
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from onenote_organizer.graph_client import GraphClient
 
 
 def _make_page_response(items: list[dict], next_link: str | None = None) -> dict:
     """Create a Graph API page response with optional nextLink."""
-    response: dict = {"value": items}
+    response: dict[str, Any] = {"value": items}
     if next_link is not None:
         response["@odata.nextLink"] = next_link
     return response
 
 
-def _split_items_into_pages(
-    items: list[dict], num_pages: int
-) -> list[list[dict]]:
-    """Split items into num_pages chunks (some may be empty if num_pages > len(items))."""
-    if num_pages <= 0:
-        return [items] if items else [[]]
-    pages: list[list[dict]] = [[] for _ in range(num_pages)]
-    for i, item in enumerate(items):
-        pages[i % num_pages].append(item)
-    return pages
-
-
-def _create_mock_response(body: dict, request: httpx.Request) -> httpx.Response:
-    """Create a proper httpx.Response with request set (needed for raise_for_status)."""
-    response = httpx.Response(
-        status_code=200,
-        json=body,
-        request=request,
-    )
-    return response
-
-
-# Strategy: generate N items (0-50) and split across 1-5 pages
-items_strategy = st.integers(min_value=0, max_value=50).flatmap(
-    lambda n: st.tuples(
-        st.just(n),
-        st.integers(min_value=1, max_value=5),
-    )
+# Strategy: generate a list of pages (1-5 pages), each with 0-10 items
+pages_strategy = st.lists(
+    st.integers(min_value=0, max_value=10),
+    min_size=1,
+    max_size=5,
 )
 
 
@@ -66,24 +42,33 @@ class TestPaginationCollectsAllItems:
 
     # **Validates: Requirements 4.1, 5.1, 6.1**
 
-    @given(data=items_strategy)
+    @given(items_per_page=pages_strategy)
     @settings(max_examples=100)
     @pytest.mark.asyncio
     async def test_paginated_get_collects_all_items(
-        self, data: tuple[int, int]
+        self, items_per_page: list[int],
     ) -> None:
-        """For any N items split across pages, _paginated_get returns exactly N items."""
-        n_items, num_pages = data
+        """For any N items split across pages, _paginated_get returns exactly N items
+        with no duplicates and no omissions."""
 
-        # Generate N unique items with distinct IDs
-        all_items = [{"id": f"item-{i}", "name": f"Item {i}"} for i in range(n_items)]
+        # Build pages with unique items; each page has a variable number of items
+        pages: list[list[dict]] = []
+        item_counter = 0
+        all_items: list[dict] = []
 
-        # Split items across pages
-        pages = _split_items_into_pages(all_items, num_pages)
+        for page_item_count in items_per_page:
+            page_items = [
+                {"id": f"item-{item_counter + i}", "displayName": f"Item {item_counter + i}"}
+                for i in range(page_item_count)
+            ]
+            pages.append(page_items)
+            all_items.extend(page_items)
+            item_counter += page_item_count
 
+        total_items = len(all_items)
         base_url = "https://graph.microsoft.com/v1.0/me/onenote/notebooks"
 
-        # Build URL -> response body mapping
+        # Build URL -> response body mapping simulating @odata.nextLink pagination
         url_map: dict[str, dict] = {}
         for page_idx, page_items in enumerate(pages):
             if page_idx == 0:
@@ -91,6 +76,7 @@ class TestPaginationCollectsAllItems:
             else:
                 url = f"{base_url}?$skip={page_idx}"
 
+            # Add nextLink for all pages except the last
             if page_idx < len(pages) - 1:
                 next_link = f"{base_url}?$skip={page_idx + 1}"
             else:
@@ -98,12 +84,13 @@ class TestPaginationCollectsAllItems:
 
             url_map[url] = _make_page_response(page_items, next_link)
 
-        # Mock the _request method directly on the GraphClient instance
+        # Mock auth provider to return a static token
         mock_auth = AsyncMock()
         mock_auth.get_access_token.return_value = "fake-token"
 
         client = GraphClient(mock_auth)
 
+        # Mock _request to simulate httpx responses for paginated Graph API
         async def mock_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
             body = url_map.get(url)
             if body is None:
@@ -123,71 +110,13 @@ class TestPaginationCollectsAllItems:
         result = await client._paginated_get(base_url)
 
         # Verify exactly N items collected
-        assert len(result) == n_items
+        assert len(result) == total_items
 
         # Verify no duplicates (all IDs are unique)
         ids = [item["id"] for item in result]
         assert len(set(ids)) == len(ids)
 
-        # Verify all original items are present
-        expected_ids = {f"item-{i}" for i in range(n_items)}
+        # Verify all original items are present (no omissions)
+        expected_ids = {item["id"] for item in all_items}
         actual_ids = set(ids)
         assert actual_ids == expected_ids
-
-    @given(data=items_strategy)
-    @settings(max_examples=100)
-    @pytest.mark.asyncio
-    async def test_paginated_get_no_omissions(
-        self, data: tuple[int, int]
-    ) -> None:
-        """For any N items, no item from any page is omitted in the final result."""
-        n_items, num_pages = data
-
-        all_items = [
-            {"id": f"entry-{i}", "value": i * 10} for i in range(n_items)
-        ]
-        pages = _split_items_into_pages(all_items, num_pages)
-
-        base_url = "https://graph.microsoft.com/v1.0/me/onenote/sections/sec-1/pages"
-
-        # Build URL -> response body mapping
-        url_map: dict[str, dict] = {}
-        for page_idx, page_items in enumerate(pages):
-            if page_idx == 0:
-                url = base_url
-            else:
-                url = f"{base_url}?$skip={page_idx}"
-
-            if page_idx < len(pages) - 1:
-                next_link = f"{base_url}?$skip={page_idx + 1}"
-            else:
-                next_link = None
-
-            url_map[url] = _make_page_response(page_items, next_link)
-
-        mock_auth = AsyncMock()
-        mock_auth.get_access_token.return_value = "fake-token"
-
-        client = GraphClient(mock_auth)
-
-        async def mock_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
-            body = url_map.get(url)
-            if body is None:
-                raise httpx.HTTPStatusError(
-                    "Not found",
-                    request=httpx.Request("GET", url),
-                    response=httpx.Response(404),
-                )
-            return httpx.Response(
-                status_code=200,
-                json=body,
-                request=httpx.Request("GET", url),
-            )
-
-        client._request = mock_request  # type: ignore[assignment]
-
-        result = await client._paginated_get(base_url)
-
-        # Every original item must appear in the result
-        for item in all_items:
-            assert item in result, f"Item {item['id']} was omitted from results"
