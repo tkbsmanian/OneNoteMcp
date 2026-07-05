@@ -363,3 +363,41 @@ class GraphClient:
             display_name=item["displayName"],
             notebook_id=item.get("parentNotebook", {}).get("id", notebook_id),
         )
+
+    async def clone_page_to_section(self, page_id: str, target_section_id: str) -> str:
+        """Clone a page to a different section by reading HTML and re-posting it.
+
+        This is the workaround for personal Microsoft accounts where copyToSection
+        returns 501 "OData Feature not implemented". It reads the full page HTML
+        and creates a new page in the target section with that content.
+
+        Args:
+            page_id: The ID of the source page to clone.
+            target_section_id: The ID of the destination section.
+
+        Returns:
+            The ID of the newly created page in the target section.
+
+        Raises:
+            GraphError: If the Graph API returns an HTTP error status.
+            NetworkError: If a timeout or connection error occurs.
+        """
+        # Step 1: Read the source page's full HTML content
+        html_content = await self.get_page_content(page_id)
+
+        # Step 2: Post the HTML to the destination section to create a new page
+        url = f"{self.BASE_URL}/me/onenote/sections/{target_section_id}/pages"
+        response = await self._request(
+            "POST",
+            url,
+            content=html_content.encode("utf-8"),
+            headers={"Content-Type": "text/html"},
+        )
+
+        # Extract the new page ID from the response
+        try:
+            data = response.json()
+            return data.get("id", "")
+        except (ValueError, KeyError):
+            # If response isn't JSON, return empty (page was likely created)
+            return ""

@@ -369,12 +369,121 @@ async def create_section(notebook_id: str, display_name: str) -> dict:
 
 
 @mcp.tool()
+async def clone_page_to_section(
+    page_id: str, target_section_id: str, dry_run: bool = False
+) -> dict:
+    """Clone a page to a different section (works with personal Microsoft accounts).
+
+    This is the recommended tool for moving pages when using a personal account
+    (outlook.com, hotmail.com, live.com). It reads the page's HTML content and
+    recreates it in the target section, bypassing the copyToSection 501 limitation.
+
+    Note: The original page remains in place. Images/attachments may not transfer.
+
+    Args:
+        page_id: The ID of the page to clone.
+        target_section_id: The ID of the destination section.
+        dry_run: If True, return projected outcome without making changes.
+
+    Returns:
+        A dictionary with success status, the new page ID, and a summary.
+    """
+    tool_name = "clone_page_to_section"
+
+    # Input validation
+    invalid_fields: dict[str, str] = {}
+    if not page_id or not page_id.strip():
+        invalid_fields["page_id"] = "pageId is required and cannot be empty"
+    if not target_section_id or not target_section_id.strip():
+        invalid_fields["target_section_id"] = (
+            "targetSectionId is required and cannot be empty"
+        )
+
+    if invalid_fields:
+        return _make_error_response(
+            category="validation_error",
+            message="Invalid input parameters.",
+            tool_name=tool_name,
+            invalid_fields=invalid_fields,
+        )
+
+    try:
+        graph_client = _get_graph_client()
+
+        # Look up page and section metadata for the summary
+        page_metadata = await graph_client.get_page_metadata(page_id)
+        page_title = page_metadata.title or "Untitled"
+        source_section_id = page_metadata.section_id
+
+        # Same section check
+        if source_section_id == target_section_id:
+            summary = f"No clone necessary for '{page_title}' — already in the target section."
+            result: dict = {"success": True, "summary": summary}
+            if dry_run:
+                result["dryRun"] = True
+            return result
+
+        target_section = await graph_client.get_section_metadata(target_section_id)
+        target_name = target_section.display_name
+
+        # Dry-run mode
+        if dry_run:
+            summary = f"Would clone '{page_title}' to '{target_name}'"
+            return {"success": True, "dryRun": True, "summary": summary}
+
+        # Live mode: clone the page
+        new_page_id = await graph_client.clone_page_to_section(
+            page_id, target_section_id
+        )
+
+        summary = f"Cloned '{page_title}' to '{target_name}'"
+        if len(summary) > 256:
+            summary = summary[:253] + "..."
+
+        # Log the operation
+        _logger.log_move(
+            page_id=page_id,
+            source_section_id=source_section_id or "unknown",
+            target_section_id=target_section_id,
+            success=True,
+            summary=summary,
+        )
+
+        return {
+            "success": True,
+            "summary": summary,
+            "newPageId": new_page_id,
+        }
+
+    except AuthError as exc:
+        return _make_error_response(
+            category="auth_error",
+            message=str(exc),
+            tool_name=tool_name,
+        )
+    except GraphError as exc:
+        return _make_error_response(
+            category="graph_error",
+            message=str(exc),
+            tool_name=tool_name,
+            status_code=exc.status_code,
+        )
+    except NetworkError as exc:
+        return _make_error_response(
+            category="network_error",
+            message=str(exc),
+            tool_name=tool_name,
+        )
+
+
+@mcp.tool()
 async def move_page_to_section(
     page_id: str, target_section_id: str, dry_run: bool = False
 ) -> dict:
     """Move a page to a different section.
 
-    Uses Microsoft Graph's copy-to-section operation to move a page.
+    Uses clone approach (read HTML + post to target) for personal accounts,
+    with fallback to copyToSection for organizational accounts.
     Supports dry-run mode to preview the operation without making changes.
 
     Args:
@@ -437,7 +546,33 @@ async def move_page_to_section(
                 summary = summary[:253] + "..."
             return {"success": True, "dryRun": True, "summary": summary}
 
-        # --- Live mode: execute the move ---
+        # --- Live mode: try clone approach first (works on personal accounts),
+        #     fall back to copyToSection if clone fails ---
+        try:
+            new_page_id = await graph_client.clone_page_to_section(
+                page_id, target_section_id
+            )
+            summary = (
+                f"Moved '{page_title}' from '{source_name}' to '{target_name}'"
+            )
+            if len(summary) > 256:
+                summary = summary[:253] + "..."
+
+            _logger.log_move(
+                page_id=page_id,
+                source_section_id=source_section_id,
+                target_section_id=target_section_id,
+                success=True,
+                summary=summary,
+            )
+
+            return {"success": True, "summary": summary, "newPageId": new_page_id}
+
+        except (GraphError, NetworkError):
+            # Clone failed — fall back to copyToSection (for org accounts)
+            pass
+
+        # Fallback: copyToSection (works on organizational accounts)
         operation_url = await graph_client.copy_page_to_section(
             page_id, target_section_id
         )
