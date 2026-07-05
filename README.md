@@ -427,10 +427,14 @@ Add to `.vscode/mcp.json`:
 | `list_sections` | List sections in a notebook | `notebook_id` |
 | `list_pages` | List pages in a section | `section_id` |
 | `get_page_content` | Read page content | `page_id`, `format` (html/text) |
-| `move_page_to_section` | Move a page to another section | `page_id`, `target_section_id`, `dry_run` |
+| `create_section` | Create a new section in a notebook | `notebook_id`, `display_name` |
+| `move_page_to_section` | Move a page (clone-first, fallback to copy) | `page_id`, `target_section_id`, `dry_run` |
+| `clone_page_to_section` | Clone a page to another section (personal accounts) | `page_id`, `target_section_id`, `dry_run` |
 | `rename_page` | Rename a page | `page_id`, `new_title`, `dry_run` |
 | `bulk_plan_reorganization` | Generate a reorganization plan | `notebook_id`, `strategy` |
-| `apply_reorganization_plan` | Execute a reorganization plan | `plan`, `dry_run` |
+| `apply_reorganization_plan` | Execute a reorganization plan (batched) | `plan`, `dry_run`, `batch_size`, `offset` |
+
+> **Personal account note**: `move_page_to_section` and `clone_page_to_section` use a clone approach (read HTML → post to target section) that works on personal Microsoft accounts. The original page remains in place after cloning. Images/attachments may not transfer perfectly.
 
 ## Sample Prompts for Organizing with PARA Method
 
@@ -538,8 +542,11 @@ pytest tests/test_unit/test_list_tools.py -v
 
 ## Known Limitations
 
-- **Move = Copy**: Microsoft Graph does not support native page moves. The "move" operation copies the page to the target section. The original remains in place (OneNote does not expose a page delete API).
+- **Move = Clone**: Microsoft Graph does not support native page moves. For personal accounts, the server clones the page (reads HTML, posts to target section). The original page remains in place — OneNote does not expose a page delete API via Graph.
+- **Personal account `copyToSection` 501**: The Graph API's `copyToSection` endpoint returns "OData Feature not implemented" for personal accounts (outlook.com, hotmail.com, live.com). The `clone_page_to_section` tool works around this.
+- **Images/attachments in cloned pages**: Embedded images and file attachments may not transfer when cloning, as they reference resource URLs tied to the original page. Text content and formatting are preserved.
 - **No real-time sync**: The server always fetches fresh data from Graph on each tool call. There is no local cache or push notification support.
+- **Large plans**: For notebooks with hundreds of pages, use `apply_reorganization_plan` with `batch_size` and `offset` parameters to process moves incrementally (default: 10 per batch, 5 concurrent).
 - **Device code flow only**: The server currently supports device code authentication. Other flows (client credentials, authorization code) can be implemented by swapping the `AuthProvider`.
 
 ## What's Next

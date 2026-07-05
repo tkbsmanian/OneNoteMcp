@@ -420,6 +420,56 @@ This plan implements a Python MCP server using FastMCP, httpx, and MSAL that exp
     # All verifications passed
     ```
 
+- [x] 12. Post-release enhancements `[mandatory]`
+  - [x] 12.1 Add `create_section` standalone tool `[mandatory]`
+    - Expose GraphClient.create_section as a standalone MCP tool
+    - Validate notebook_id and display_name inputs
+    - Returns created section id, displayName, notebookId
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Added create_section tool to server.py
+      python -c "from onenote_organizer.server import create_section; print('OK')"
+      .venv/bin/python -c "import ast; ast.parse(open('onenote_organizer/server.py').read()); print('Syntax OK')"
+      ```
+
+  - [x] 12.2 Add `clone_page_to_section` tool (personal account workaround) `[mandatory]`
+    - Reads source page HTML via GET /pages/{id}/content
+    - Posts HTML to target section via POST /sections/{id}/pages
+    - Bypasses 501 "OData Feature not implemented" error on personal accounts
+    - Supports dry-run mode
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Added clone_page_to_section method to graph_client.py
+      # Added clone_page_to_section tool to server.py
+      python -c "from onenote_organizer.server import clone_page_to_section; print('OK')"
+      ```
+
+  - [x] 12.3 Update `move_page_to_section` to use clone-first approach `[mandatory]`
+    - Try clone (read HTML + post) first — works on personal accounts
+    - Fall back to copyToSection if clone fails — works on org accounts
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Updated move_page_to_section in server.py with clone-first, copyToSection fallback
+      python -c "from onenote_organizer.server import move_page_to_section; print('OK')"
+      ```
+
+  - [x] 12.4 Add batch processing to `apply_reorganization_plan` `[mandatory]`
+    - Added `batch_size` parameter (default 10) — max moves per call
+    - Added `offset` parameter (default 0) — starting index in pageMoves
+    - Concurrent moves via asyncio.Semaphore (up to 5 at a time)
+    - Returns `nextOffset` and `remaining` when more moves exist
+    - Sections only created on first batch (offset=0); subsequent batches look up existing
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Updated apply_reorganization_plan in server.py with batch_size, offset, concurrency
+      python -c "from onenote_organizer.server import apply_reorganization_plan; print('OK')"
+      .venv/bin/python -c "import ast; ast.parse(open('onenote_organizer/server.py').read()); print('Syntax OK')"
+      ```
+
 ## Notes
 
 - `<project-root>` refers to the cloned repository root directory
