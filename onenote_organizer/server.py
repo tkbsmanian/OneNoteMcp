@@ -311,6 +311,64 @@ async def get_page_content(page_id: str, format: str = "html") -> dict:
 
 
 @mcp.tool()
+async def create_section(notebook_id: str, display_name: str) -> dict:
+    """Create a new section in a notebook.
+
+    Args:
+        notebook_id: The ID of the notebook to create the section in.
+        display_name: The display name for the new section.
+
+    Returns:
+        A dictionary with the created section's id and displayName, or an error.
+    """
+    tool_name = "create_section"
+
+    # Input validation
+    invalid_fields: dict[str, str] = {}
+    if not notebook_id or not notebook_id.strip():
+        invalid_fields["notebook_id"] = "notebookId is required and cannot be empty"
+    if not display_name or not display_name.strip():
+        invalid_fields["display_name"] = "displayName is required and cannot be empty"
+
+    if invalid_fields:
+        return _make_error_response(
+            category="validation_error",
+            message="Invalid input parameters.",
+            tool_name=tool_name,
+            invalid_fields=invalid_fields,
+        )
+
+    try:
+        graph_client = _get_graph_client()
+        section = await graph_client.create_section(notebook_id, display_name)
+        return {
+            "id": section.id,
+            "displayName": section.display_name,
+            "notebookId": section.notebook_id,
+            "summary": f"Created section '{section.display_name}'",
+        }
+    except AuthError as exc:
+        return _make_error_response(
+            category="auth_error",
+            message=str(exc),
+            tool_name=tool_name,
+        )
+    except GraphError as exc:
+        return _make_error_response(
+            category="graph_error",
+            message=str(exc),
+            tool_name=tool_name,
+            status_code=exc.status_code,
+        )
+    except NetworkError as exc:
+        return _make_error_response(
+            category="network_error",
+            message=str(exc),
+            tool_name=tool_name,
+        )
+
+
+@mcp.tool()
 async def move_page_to_section(
     page_id: str, target_section_id: str, dry_run: bool = False
 ) -> dict:
@@ -781,18 +839,27 @@ def _group_by_tag(
 
 
 @mcp.tool()
-async def apply_reorganization_plan(plan: dict, dry_run: bool = False) -> dict:
+async def apply_reorganization_plan(
+    plan: dict, dry_run: bool = False, batch_size: int = 10, offset: int = 0
+) -> dict:
     """Execute an approved reorganization plan.
 
     Validates the plan structure and all referenced resources before making
     any mutations. Supports dry-run mode to preview changes without modifying data.
 
+    For large plans (many page moves), use batch_size and offset to process
+    moves in batches across multiple calls, avoiding timeouts.
+
     Args:
         plan: A reorganization plan with "suggestedSections" and "pageMoves" arrays.
         dry_run: If True, validate and return forecast without making changes.
+        batch_size: Max number of page moves to execute in this call (default 10).
+        offset: Starting index in pageMoves to process from (default 0).
+            Set to 0 on first call. Use the returned "nextOffset" for subsequent calls.
 
     Returns:
-        A dictionary with success status, summary, and any errors encountered.
+        A dictionary with success status, summary, any errors encountered,
+        and "nextOffset" if more moves remain.
     """
     tool_name = "apply_reorganization_plan"
 
@@ -933,7 +1000,9 @@ async def apply_reorganization_plan(plan: dict, dry_run: bool = False) -> dict:
             "summary": summary,
         }
 
-    # --- 4. Live mode: create sections, then move pages ---
+    # --- 4. Live mode: create sections, then move pages in batches ---
+    import asyncio
+
     errors: list[str] = []
     sections_created = 0
     pages_moved = 0
@@ -942,62 +1011,96 @@ async def apply_reorganization_plan(plan: dict, dry_run: bool = False) -> dict:
     created_section_map: dict[str, str] = {}
     failed_sections: set[str] = set()
 
-    # Create missing sections first
-    for section_spec in suggested_sections:
-        display_name = section_spec["displayName"]
-        notebook_id = section_spec["notebookId"]
-        try:
-            new_section = await graph_client.create_section(notebook_id, display_name)
-            created_section_map[display_name] = new_section.id
-            sections_created += 1
-        except (GraphError, NetworkError) as exc:
-            failed_sections.add(display_name)
-            errors.append(
-                f"Failed to create section '{display_name}': {exc}"
-            )
+    # Create missing sections first (only on first batch / offset == 0)
+    if offset == 0:
+        for section_spec in suggested_sections:
+            display_name = section_spec["displayName"]
+            notebook_id = section_spec["notebookId"]
+            try:
+                new_section = await graph_client.create_section(notebook_id, display_name)
+                created_section_map[display_name] = new_section.id
+                sections_created += 1
+            except (GraphError, NetworkError) as exc:
+                failed_sections.add(display_name)
+                errors.append(
+                    f"Failed to create section '{display_name}': {exc}"
+                )
+    else:
+        # For subsequent batches, look up existing sections by display name
+        # (they were created in the first batch)
+        notebook_ids = {s["notebookId"] for s in suggested_sections}
+        for nb_id in notebook_ids:
+            try:
+                existing_sections = await graph_client.list_sections(nb_id)
+                for sec in existing_sections:
+                    created_section_map[sec.display_name] = sec.id
+            except (GraphError, NetworkError):
+                pass
 
-    # Move pages
-    for move_spec in page_moves:
+    # Slice the page moves for this batch
+    batch_end = min(offset + batch_size, len(page_moves))
+    batch_moves = page_moves[offset:batch_end]
+
+    # Process page moves concurrently (up to 5 at a time)
+    semaphore = asyncio.Semaphore(5)
+
+    async def move_one_page(move_spec: dict) -> tuple[bool, str | None]:
+        """Move a single page. Returns (success, error_message_or_None)."""
         page_id = move_spec["pageId"]
         target_display_name = move_spec["targetSectionDisplayName"]
 
-        # Skip if the target section failed to create
         if target_display_name in failed_sections:
-            errors.append(
+            return False, (
                 f"Skipped moving page '{page_id}' — "
                 f"target section '{target_display_name}' failed to create"
             )
-            continue
 
-        # Look up the target section ID from the created sections
         target_section_id = created_section_map.get(target_display_name)
         if target_section_id is None:
-            errors.append(
+            return False, (
                 f"Skipped moving page '{page_id}' — "
                 f"target section '{target_display_name}' not found in created sections"
             )
-            continue
 
-        try:
-            operation_url = await graph_client.copy_page_to_section(
-                page_id, target_section_id
-            )
-            operation_result = await graph_client.poll_operation(operation_url)
-
-            if operation_result.status == "completed":
-                pages_moved += 1
-            else:
-                error_msg = operation_result.error_message or "Move operation failed"
-                errors.append(
-                    f"Failed to move page '{page_id}' to '{target_display_name}': {error_msg}"
+        async with semaphore:
+            try:
+                operation_url = await graph_client.copy_page_to_section(
+                    page_id, target_section_id
                 )
-        except (GraphError, NetworkError) as exc:
-            errors.append(
-                f"Failed to move page '{page_id}' to '{target_display_name}': {exc}"
-            )
+                operation_result = await graph_client.poll_operation(operation_url)
+
+                if operation_result.status == "completed":
+                    return True, None
+                else:
+                    error_msg = operation_result.error_message or "Move operation failed"
+                    return False, (
+                        f"Failed to move page '{page_id}' to '{target_display_name}': {error_msg}"
+                    )
+            except (GraphError, NetworkError) as exc:
+                return False, (
+                    f"Failed to move page '{page_id}' to '{target_display_name}': {exc}"
+                )
+
+    # Execute batch concurrently
+    results = await asyncio.gather(
+        *(move_one_page(move_spec) for move_spec in batch_moves),
+        return_exceptions=False,
+    )
+
+    for success, error_msg in results:
+        if success:
+            pages_moved += 1
+        elif error_msg:
+            errors.append(error_msg)
 
     # --- 5. Generate summary and log ---
+    has_more = batch_end < len(page_moves)
+    total_processed = batch_end
+    total_remaining = len(page_moves) - batch_end
+
     summary = f"Created {sections_created} sections and moved {pages_moved} pages"
+    if has_more:
+        summary += f" (batch {offset}-{batch_end} of {len(page_moves)} total, {total_remaining} remaining)"
     if len(summary) > 256:
         summary = summary[:253] + "..."
 
@@ -1005,7 +1108,6 @@ async def apply_reorganization_plan(plan: dict, dry_run: bool = False) -> dict:
     success = len(errors) == 0
 
     # Log the operation
-    # Extract a notebook_id for logging (use first one from suggested sections)
     log_notebook_id = (
         suggested_sections[0]["notebookId"] if suggested_sections else "unknown"
     )
@@ -1020,7 +1122,14 @@ async def apply_reorganization_plan(plan: dict, dry_run: bool = False) -> dict:
     result: dict = {
         "success": success,
         "summary": summary,
+        "pagesMoved": pages_moved,
+        "sectionsCreated": sections_created,
+        "totalPageMoves": len(page_moves),
+        "processedUpTo": batch_end,
     }
+    if has_more:
+        result["nextOffset"] = batch_end
+        result["remaining"] = total_remaining
     if errors:
         result["errors"] = errors
 
