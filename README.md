@@ -428,13 +428,14 @@ Add to `.vscode/mcp.json`:
 | `list_pages` | List pages in a section | `section_id` |
 | `get_page_content` | Read page content | `page_id`, `format` (html/text) |
 | `create_section` | Create a new section in a notebook | `notebook_id`, `display_name` |
-| `move_page_to_section` | Move a page (clone-first, fallback to copy) | `page_id`, `target_section_id`, `dry_run` |
-| `clone_page_to_section` | Clone a page to another section (personal accounts) | `page_id`, `target_section_id`, `dry_run` |
+| `delete_page` | Delete a page (cannot be recovered) | `page_id`, `dry_run` |
+| `move_page_to_section` | Move a page (clone + delete original) | `page_id`, `target_section_id`, `dry_run` |
+| `clone_page_to_section` | Clone/move a page (personal accounts) | `page_id`, `target_section_id`, `delete_source`, `dry_run` |
 | `rename_page` | Rename a page | `page_id`, `new_title`, `dry_run` |
 | `bulk_plan_reorganization` | Generate a reorganization plan | `notebook_id`, `strategy` |
 | `apply_reorganization_plan` | Execute a reorganization plan (batched) | `plan`, `dry_run`, `batch_size`, `offset` |
 
-> **Personal account note**: `move_page_to_section` and `clone_page_to_section` use a clone approach (read HTML → post to target section) that works on personal Microsoft accounts. The original page remains in place after cloning. Images/attachments may not transfer perfectly.
+> **Move behavior**: `move_page_to_section` and `clone_page_to_section` (with `delete_source=True`) perform a true move: clone the page to the target section, then delete the original. Set `delete_source=False` on `clone_page_to_section` to keep the original (copy behavior).
 
 ## Sample Prompts for Organizing with PARA Method
 

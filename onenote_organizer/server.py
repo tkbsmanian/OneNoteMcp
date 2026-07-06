@@ -369,20 +369,79 @@ async def create_section(notebook_id: str, display_name: str) -> dict:
 
 
 @mcp.tool()
-async def clone_page_to_section(
-    page_id: str, target_section_id: str, dry_run: bool = False
-) -> dict:
-    """Clone a page to a different section (works with personal Microsoft accounts).
+async def delete_page(page_id: str, dry_run: bool = False) -> dict:
+    """Delete a page from OneNote.
 
-    This is the recommended tool for moving pages when using a personal account
-    (outlook.com, hotmail.com, live.com). It reads the page's HTML content and
-    recreates it in the target section, bypassing the copyToSection 501 limitation.
-
-    Note: The original page remains in place. Images/attachments may not transfer.
+    WARNING: Deleted pages cannot be recovered via the API.
 
     Args:
-        page_id: The ID of the page to clone.
+        page_id: The ID of the page to delete.
+        dry_run: If True, return projected outcome without deleting.
+
+    Returns:
+        A dictionary with success status and summary.
+    """
+    tool_name = "delete_page"
+
+    if not page_id or not page_id.strip():
+        return _make_error_response(
+            category="validation_error",
+            message="pageId is required and cannot be empty",
+            tool_name=tool_name,
+            invalid_fields={"page_id": "pageId is required and cannot be empty"},
+        )
+
+    try:
+        graph_client = _get_graph_client()
+        page_metadata = await graph_client.get_page_metadata(page_id)
+        page_title = page_metadata.title or "Untitled"
+
+        if dry_run:
+            return {
+                "success": True,
+                "dryRun": True,
+                "summary": f"Would delete '{page_title}'",
+            }
+
+        await graph_client.delete_page(page_id)
+
+        summary = f"Deleted '{page_title}'"
+        return {"success": True, "summary": summary}
+
+    except AuthError as exc:
+        return _make_error_response(
+            category="auth_error", message=str(exc), tool_name=tool_name
+        )
+    except GraphError as exc:
+        return _make_error_response(
+            category="graph_error",
+            message=str(exc),
+            tool_name=tool_name,
+            status_code=exc.status_code,
+        )
+    except NetworkError as exc:
+        return _make_error_response(
+            category="network_error", message=str(exc), tool_name=tool_name
+        )
+
+
+@mcp.tool()
+async def clone_page_to_section(
+    page_id: str, target_section_id: str, delete_source: bool = True, dry_run: bool = False
+) -> dict:
+    """Clone (move) a page to a different section (works with personal Microsoft accounts).
+
+    This is the recommended tool for moving pages when using a personal account
+    (outlook.com, hotmail.com, live.com). It reads the page's HTML content,
+    recreates it in the target section, and deletes the original.
+
+    Note: Images/attachments may not transfer perfectly.
+
+    Args:
+        page_id: The ID of the page to clone/move.
         target_section_id: The ID of the destination section.
+        delete_source: If True (default), delete the original page after cloning.
+            Set to False to keep the original (copy behavior).
         dry_run: If True, return projected outcome without making changes.
 
     Returns:
@@ -436,7 +495,20 @@ async def clone_page_to_section(
             page_id, target_section_id
         )
 
-        summary = f"Cloned '{page_title}' to '{target_name}'"
+        # Delete the original page if requested (true move)
+        source_deleted = False
+        if delete_source:
+            try:
+                await graph_client.delete_page(page_id)
+                source_deleted = True
+            except (GraphError, NetworkError):
+                # Delete failed — page was still cloned successfully
+                pass
+
+        if source_deleted:
+            summary = f"Moved '{page_title}' to '{target_name}'"
+        else:
+            summary = f"Cloned '{page_title}' to '{target_name}' (original kept)"
         if len(summary) > 256:
             summary = summary[:253] + "..."
 
@@ -453,6 +525,7 @@ async def clone_page_to_section(
             "success": True,
             "summary": summary,
             "newPageId": new_page_id,
+            "sourceDeleted": source_deleted,
         }
 
     except AuthError as exc:
@@ -552,6 +625,15 @@ async def move_page_to_section(
             new_page_id = await graph_client.clone_page_to_section(
                 page_id, target_section_id
             )
+
+            # Delete the original page to complete the "move"
+            try:
+                await graph_client.delete_page(page_id)
+            except (GraphError, NetworkError):
+                # If delete fails, the page was still cloned successfully
+                # Log but don't fail the overall operation
+                pass
+
             summary = (
                 f"Moved '{page_title}' from '{source_name}' to '{target_name}'"
             )

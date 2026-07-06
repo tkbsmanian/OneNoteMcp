@@ -401,3 +401,18 @@ class GraphClient:
         except (ValueError, KeyError):
             # If response isn't JSON, return empty (page was likely created)
             return ""
+
+    async def delete_page(self, page_id: str) -> None:
+        """Delete a page from OneNote.
+
+        WARNING: Pages deleted via the API cannot be recovered.
+
+        Args:
+            page_id: The ID of the page to delete.
+
+        Raises:
+            GraphError: If the Graph API returns an HTTP error status.
+            NetworkError: If a timeout or connection error occurs.
+        """
+        url = f"{self.BASE_URL}/me/onenote/pages/{page_id}"
+        await self._request("DELETE", url)
