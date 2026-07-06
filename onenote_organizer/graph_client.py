@@ -371,6 +371,8 @@ class GraphClient:
         returns 501 "OData Feature not implemented". It reads the full page HTML
         and creates a new page in the target section with that content.
 
+        Safety: Verifies the new page was created successfully before returning.
+
         Args:
             page_id: The ID of the source page to clone.
             target_section_id: The ID of the destination section.
@@ -379,11 +381,22 @@ class GraphClient:
             The ID of the newly created page in the target section.
 
         Raises:
-            GraphError: If the Graph API returns an HTTP error status.
+            GraphError: If the Graph API returns an HTTP error, or if the
+                cloned page cannot be verified.
             NetworkError: If a timeout or connection error occurs.
         """
         # Step 1: Read the source page's full HTML content
         html_content = await self.get_page_content(page_id)
+
+        # Step 1b: Check if page has meaningful content (not blank)
+        # Strip HTML tags and check if there's any visible text
+        import re
+        visible_text = re.sub(r"<[^>]+>", "", html_content).strip()
+        if not visible_text:
+            raise GraphError(
+                message="Source page has no visible content (blank page) — skipping clone",
+                status_code=None,
+            )
 
         # Step 2: Post the HTML to the destination section to create a new page
         url = f"{self.BASE_URL}/me/onenote/sections/{target_section_id}/pages"
@@ -394,13 +407,36 @@ class GraphClient:
             headers={"Content-Type": "text/html"},
         )
 
-        # Extract the new page ID from the response
+        # Step 3: Extract the new page ID from the response
+        new_page_id = ""
         try:
             data = response.json()
-            return data.get("id", "")
+            new_page_id = data.get("id", "")
         except (ValueError, KeyError):
-            # If response isn't JSON, return empty (page was likely created)
-            return ""
+            pass
+
+        # Step 4: Verify the new page actually exists
+        if not new_page_id:
+            raise GraphError(
+                message="Clone failed — no new page ID returned from Graph API",
+                status_code=None,
+            )
+
+        # Step 5: Verify the new page is accessible (exists and has content)
+        try:
+            new_page_meta = await self.get_page_metadata(new_page_id)
+            if not new_page_meta.id:
+                raise GraphError(
+                    message="Clone verification failed — new page not found after creation",
+                    status_code=None,
+                )
+        except GraphError:
+            raise GraphError(
+                message=f"Clone verification failed — cannot read new page {new_page_id}",
+                status_code=None,
+            )
+
+        return new_page_id
 
     async def delete_page(self, page_id: str) -> None:
         """Delete a page from OneNote.
