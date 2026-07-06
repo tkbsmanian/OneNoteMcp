@@ -437,6 +437,16 @@ Add to `.vscode/mcp.json`:
 
 > **Move behavior**: `move_page_to_section` and `clone_page_to_section` (with `delete_source=True`) perform a true move: clone the page to the target section, then delete the original. Set `delete_source=False` on `clone_page_to_section` to keep the original (copy behavior).
 
+### Move Safety Guarantees
+
+The move operation enforces strict verification before deleting the original:
+
+1. **Blank page check** — Pages with no visible text content are skipped (not cloned or deleted)
+2. **Clone verification** — After posting HTML to the target section, the server verifies the new page ID was returned
+3. **Existence check** — The new page is read back via `get_page_metadata` to confirm it's accessible
+4. **Delete only after verification** — The original is only deleted if all three checks pass
+5. **Graceful failure** — If delete fails after a successful clone, the operation still reports success (page exists in target)
+
 ## Sample Prompts for Organizing with PARA Method
 
 The [PARA method](https://fortelabs.com/blog/para/) organizes information into four categories: **Projects**, **Areas**, **Resources**, and **Archive**. Here are prompts to use with Claude Desktop once connected:
