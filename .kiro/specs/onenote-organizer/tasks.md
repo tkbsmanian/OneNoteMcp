@@ -470,6 +470,37 @@ This plan implements a Python MCP server using FastMCP, httpx, and MSAL that exp
       .venv/bin/python -c "import ast; ast.parse(open('onenote_organizer/server.py').read()); print('Syntax OK')"
       ```
 
+  - [x] 12.5 Add `delete_page` tool and clone verification safety `[mandatory]`
+    - Added delete_page to graph_client.py (DELETE /me/onenote/pages/{id})
+    - Added delete_page MCP tool for standalone page deletion
+    - clone_page_to_section now verifies new page exists before allowing delete
+    - Blank pages (no visible text) are rejected with error
+    - move_page_to_section now deletes original after verified clone
+    - _Requirements: 17.2, 17.3, 17.4, 17.5, 18.1, 18.2, 18.3, 18.4_
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Updated graph_client.py with delete_page + clone verification
+      # Added delete_page tool to server.py
+      # Updated move_page_to_section and clone_page_to_section with delete-after-verify
+      python -c "from onenote_organizer.server import delete_page, clone_page_to_section; print('OK')"
+      ```
+
+  - [x] 12.6 Add section group support (folders for PARA) `[mandatory]`
+    - Added SectionGroup model to models.py
+    - Added list_section_groups, create_section_group, create_section_in_group to graph_client.py
+    - Added 3 new MCP tools for section group management
+    - Enables PARA folder structure: Projects/, Areas/, Resources/, Archive/
+    - _Requirements: 16.1, 16.2, 16.3, 16.4_
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Updated models.py with SectionGroup dataclass
+      # Updated graph_client.py with section group methods
+      # Added list_section_groups, create_section_group, create_section_in_group tools to server.py
+      python -c "from onenote_organizer.server import list_section_groups, create_section_group, create_section_in_group; print('OK')"
+      ```
+
 ## Notes
 
 - `<project-root>` refers to the cloned repository root directory

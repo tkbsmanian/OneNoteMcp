@@ -16,7 +16,11 @@ The server is built on the official `mcp` Python SDK (FastMCP) which provides bo
 
 4. **Copy-as-move pattern** — Microsoft Graph's OneNote API does not have a native "move page" operation. Moving a page requires `POST /pages/{id}/copyToSection` followed by polling the operation status. The original page remains in place after copy (OneNote does not support page deletion via API), so the "move" is semantically a copy to target section. This limitation is documented in responses.
 
-5. **Reorganization as two-phase** — Plan generation is read-only and produces a structured proposal. Execution is a separate tool call, enabling human-in-the-loop approval. This matches the safety-first philosophy.
+5. **Clone-as-move workaround for personal accounts** — The `copyToSection` endpoint returns 501 "OData Feature not implemented" for personal Microsoft accounts. The workaround reads the page HTML (`GET /pages/{id}/content`) and posts it to the target section (`POST /sections/{id}/pages`), then deletes the original after verification. This is the only known working solution for personal accounts.
+
+6. **Section groups for hierarchical organization** — OneNote supports section groups (folders) that contain sections. This enables PARA-style organization where sections are grouped under Projects/, Areas/, Resources/, Archive/ instead of flat prefixed naming.
+
+7. **Reorganization as two-phase** — Plan generation is read-only and produces a structured proposal. Execution is a separate tool call, enabling human-in-the-loop approval. This matches the safety-first philosophy.
 
 ## Architecture
 
@@ -303,15 +307,41 @@ async def rename_page(page_id: str, new_title: str,
     ...
 
 @mcp.tool()
+async def create_section_group(notebook_id: str, display_name: str) -> dict:
+    """Create a section group (folder) in a notebook for hierarchical organization."""
+    ...
+
+@mcp.tool()
+async def create_section_in_group(section_group_id: str, display_name: str) -> dict:
+    """Create a section inside a section group."""
+    ...
+
+@mcp.tool()
+async def list_section_groups(notebook_id: str) -> list[dict]:
+    """List all section groups (folders) in a notebook."""
+    ...
+
+@mcp.tool()
+async def delete_page(page_id: str, dry_run: bool = False) -> dict:
+    """Delete a page from OneNote (cannot be recovered)."""
+    ...
+
+@mcp.tool()
+async def clone_page_to_section(page_id: str, target_section_id: str,
+                                 delete_source: bool = True, dry_run: bool = False) -> dict:
+    """Clone/move a page (personal account workaround for 501 copyToSection)."""
+    ...
+
+@mcp.tool()
 async def bulk_plan_reorganization(notebook_id: str, 
                                     strategy: str = "by_topic") -> dict:
     """Generate a reorganization plan for a notebook."""
     ...
 
 @mcp.tool()
-async def apply_reorganization_plan(plan: dict, 
-                                     dry_run: bool = False) -> dict:
-    """Execute an approved reorganization plan."""
+async def apply_reorganization_plan(plan: dict, dry_run: bool = False,
+                                     batch_size: int = 10, offset: int = 0) -> dict:
+    """Execute an approved reorganization plan (batched for large plans)."""
     ...
 ```
 

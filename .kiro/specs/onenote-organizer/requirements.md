@@ -10,12 +10,14 @@ The onenote-organizer is a Model Context Protocol (MCP) server that enables an A
 - **Microsoft_Graph**: Microsoft's unified REST API for accessing OneNote data and performing operations on notebooks, sections, and pages.
 - **Auth_Module**: A modular authentication component that handles OAuth 2.0 device code flow, token acquisition, token refresh, and token persistence.
 - **Notebook**: A top-level OneNote container identified by a unique ID and a display name.
-- **Section**: A container within a Notebook that holds pages, identified by a unique ID and a display name.
+- **Section_Group**: A folder-like container within a Notebook that holds sections, enabling hierarchical organization (e.g., PARA categories).
+- **Section**: A container within a Notebook or Section_Group that holds pages, identified by a unique ID and a display name.
 - **Page**: A content unit within a Section, identified by a unique ID, title, and last-modified timestamp.
 - **Reorganization_Plan**: A structured proposal containing suggested sections to create and page moves to execute.
 - **Dry_Run_Mode**: An operational mode where the MCP_Server forecasts changes without modifying any OneNote data.
 - **Token_Store**: An encrypted local file that persists OAuth refresh tokens between sessions.
 - **Tool**: A callable function exposed by the MCP_Server that accepts typed inputs and returns typed outputs.
+- **Clone_Page**: A workaround for personal Microsoft accounts where copyToSection returns 501; reads page HTML and posts it to the target section.
 
 ## Requirements
 
@@ -213,3 +215,37 @@ The onenote-organizer is a Model Context Protocol (MCP) server that enables an A
 3. IF a tool receives input that does not conform to the defined schema, THEN THE MCP_Server SHALL return a validation error with a category code of "validation_error" listing each invalid field name paired with a reason string describing the constraint that was violated.
 4. THE MCP_Server SHALL use a consistent error response structure across all tools containing: a category code (string identifying the error type), an HTTP status code (integer, where applicable), a human-readable message (string), and the tool name (string) that produced the error.
 5. IF a Microsoft_Graph API call fails due to a network timeout or connectivity error, THEN THE MCP_Server SHALL return a structured error with a category code of "network_error" and a message indicating that the Microsoft_Graph service could not be reached.
+
+### Requirement 16: Section Group Management
+
+**User Story:** As an AI assistant, I want to create and list section groups (folders), so that I can organize sections hierarchically using methods like PARA.
+
+#### Acceptance Criteria
+
+1. WHEN the list_section_groups tool is invoked with a valid notebookId, THE MCP_Server SHALL return an array of section group objects each containing id and displayName.
+2. WHEN the create_section_group tool is invoked with a valid notebookId and displayName, THE MCP_Server SHALL create a new section group in the notebook via Microsoft_Graph.
+3. WHEN the create_section_in_group tool is invoked with a valid sectionGroupId and displayName, THE MCP_Server SHALL create a new section inside the specified section group.
+4. IF the notebookId or sectionGroupId does not correspond to an existing resource, THEN THE MCP_Server SHALL return a structured error with the HTTP status code.
+
+### Requirement 17: Clone Page for Personal Accounts
+
+**User Story:** As a user with a personal Microsoft account, I want to move pages between sections, so that I can reorganize my notebooks despite the copyToSection API limitation.
+
+#### Acceptance Criteria
+
+1. WHEN the clone_page_to_section tool is invoked, THE MCP_Server SHALL read the source page's HTML content and create a new page in the target section with that content.
+2. WHEN clone is successful and delete_source is true, THE MCP_Server SHALL delete the original page after verifying the new page exists.
+3. THE MCP_Server SHALL verify the cloned page exists by reading its metadata before deleting the source.
+4. IF the source page has no visible text content (blank page), THEN THE MCP_Server SHALL return an error and skip the clone operation.
+5. IF the new page cannot be verified after creation, THEN THE MCP_Server SHALL NOT delete the source page.
+
+### Requirement 18: Page Deletion
+
+**User Story:** As an AI assistant, I want to delete pages, so that I can clean up originals after moving them to new sections.
+
+#### Acceptance Criteria
+
+1. WHEN the delete_page tool is invoked with a valid pageId, THE MCP_Server SHALL delete the page via Microsoft_Graph (DELETE /me/onenote/pages/{id}).
+2. WHEN delete_page is invoked with dryRun set to true, THE MCP_Server SHALL return the projected outcome without deleting.
+3. THE MCP_Server SHALL include the page title in the response summary.
+4. IF the pageId does not correspond to an existing page, THEN THE MCP_Server SHALL return a structured error.
