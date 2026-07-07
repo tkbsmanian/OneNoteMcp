@@ -19,6 +19,7 @@ from onenote_organizer.models import (
     OperationResult,
     PageMetadata,
     Section,
+    SectionGroup,
 )
 
 
@@ -452,3 +453,64 @@ class GraphClient:
         """
         url = f"{self.BASE_URL}/me/onenote/pages/{page_id}"
         await self._request("DELETE", url)
+
+    async def list_section_groups(self, notebook_id: str) -> list[SectionGroup]:
+        """List all section groups in a notebook.
+
+        Args:
+            notebook_id: The ID of the notebook to query.
+
+        Returns:
+            A list of SectionGroup objects.
+        """
+        url = f"{self.BASE_URL}/me/onenote/notebooks/{notebook_id}/sectionGroups"
+        items = await self._paginated_get(url)
+        return [
+            SectionGroup(
+                id=item["id"],
+                display_name=item["displayName"],
+                notebook_id=notebook_id,
+            )
+            for item in items
+        ]
+
+    async def create_section_group(self, notebook_id: str, display_name: str) -> SectionGroup:
+        """Create a section group (folder) in a notebook.
+
+        Args:
+            notebook_id: The ID of the notebook.
+            display_name: The name for the section group.
+
+        Returns:
+            A SectionGroup object for the newly created group.
+        """
+        url = f"{self.BASE_URL}/me/onenote/notebooks/{notebook_id}/sectionGroups"
+        body = {"displayName": display_name}
+        response = await self._request("POST", url, json=body)
+        item = response.json()
+        return SectionGroup(
+            id=item["id"],
+            display_name=item["displayName"],
+            notebook_id=notebook_id,
+        )
+
+    async def create_section_in_group(self, section_group_id: str, display_name: str) -> Section:
+        """Create a section inside a section group.
+
+        Args:
+            section_group_id: The ID of the section group.
+            display_name: The name for the new section.
+
+        Returns:
+            A Section object for the newly created section.
+        """
+        url = f"{self.BASE_URL}/me/onenote/sectionGroups/{section_group_id}/sections"
+        body = {"displayName": display_name}
+        response = await self._request("POST", url, json=body)
+        item = response.json()
+        return Section(
+            id=item["id"],
+            display_name=item["displayName"],
+            notebook_id=item.get("parentNotebook", {}).get("id"),
+            section_group_id=section_group_id,
+        )

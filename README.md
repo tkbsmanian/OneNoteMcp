@@ -424,16 +424,21 @@ Add to `.vscode/mcp.json`:
 | Tool | Description | Inputs |
 |------|-------------|--------|
 | `list_notebooks` | List all OneNote notebooks | — |
+| `list_section_groups` | List section groups (folders) in a notebook | `notebook_id` |
 | `list_sections` | List sections in a notebook | `notebook_id` |
 | `list_pages` | List pages in a section | `section_id` |
 | `get_page_content` | Read page content | `page_id`, `format` (html/text) |
-| `create_section` | Create a new section in a notebook | `notebook_id`, `display_name` |
+| `create_section_group` | Create a section group (folder) in a notebook | `notebook_id`, `display_name` |
+| `create_section_in_group` | Create a section inside a section group | `section_group_id`, `display_name` |
+| `create_section` | Create a section at notebook root level | `notebook_id`, `display_name` |
 | `delete_page` | Delete a page (cannot be recovered) | `page_id`, `dry_run` |
 | `move_page_to_section` | Move a page (clone + delete original) | `page_id`, `target_section_id`, `dry_run` |
 | `clone_page_to_section` | Clone/move a page (personal accounts) | `page_id`, `target_section_id`, `delete_source`, `dry_run` |
 | `rename_page` | Rename a page | `page_id`, `new_title`, `dry_run` |
 | `bulk_plan_reorganization` | Generate a reorganization plan | `notebook_id`, `strategy` |
 | `apply_reorganization_plan` | Execute a reorganization plan (batched) | `plan`, `dry_run`, `batch_size`, `offset` |
+
+> **PARA with section groups**: Use `create_section_group` to create top-level folders (Projects, Areas, Resources, Archive), then `create_section_in_group` to add sections within each folder, then `move_page_to_section` to move pages into those sections.
 
 > **Move behavior**: `move_page_to_section` and `clone_page_to_section` (with `delete_source=True`) perform a true move: clone the page to the target section, then delete the original. Set `delete_source=False` on `clone_page_to_section` to keep the original (copy behavior).
 

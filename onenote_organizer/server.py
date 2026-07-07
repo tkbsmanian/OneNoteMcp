@@ -369,6 +369,135 @@ async def create_section(notebook_id: str, display_name: str) -> dict:
 
 
 @mcp.tool()
+async def list_section_groups(notebook_id: str) -> list[dict] | dict:
+    """List all section groups (folders) in a notebook.
+
+    Args:
+        notebook_id: The ID of the notebook.
+
+    Returns:
+        An array of objects with id and displayName, or an error.
+    """
+    tool_name = "list_section_groups"
+
+    if not notebook_id or not notebook_id.strip():
+        return _make_error_response(
+            category="validation_error",
+            message="notebook_id is required and must not be empty.",
+            tool_name=tool_name,
+            invalid_fields={"notebook_id": "Required parameter is missing or empty"},
+        )
+
+    try:
+        graph_client = _get_graph_client()
+        groups = await graph_client.list_section_groups(notebook_id)
+        return [
+            {"id": g.id, "displayName": g.display_name}
+            for g in groups
+        ]
+    except AuthError as exc:
+        return _make_error_response(category="auth_error", message=str(exc), tool_name=tool_name)
+    except GraphError as exc:
+        return _make_error_response(category="graph_error", message=str(exc), tool_name=tool_name, status_code=exc.status_code)
+    except NetworkError as exc:
+        return _make_error_response(category="network_error", message=str(exc), tool_name=tool_name)
+
+
+@mcp.tool()
+async def create_section_group(notebook_id: str, display_name: str) -> dict:
+    """Create a section group (folder) in a notebook.
+
+    Use this to organize sections into PARA categories like Projects, Areas,
+    Resources, Archive — then create sections inside the group.
+
+    Args:
+        notebook_id: The ID of the notebook.
+        display_name: The name for the section group (e.g., "Projects").
+
+    Returns:
+        A dictionary with the created group's id and displayName, or an error.
+    """
+    tool_name = "create_section_group"
+
+    invalid_fields: dict[str, str] = {}
+    if not notebook_id or not notebook_id.strip():
+        invalid_fields["notebook_id"] = "notebookId is required and cannot be empty"
+    if not display_name or not display_name.strip():
+        invalid_fields["display_name"] = "displayName is required and cannot be empty"
+
+    if invalid_fields:
+        return _make_error_response(
+            category="validation_error",
+            message="Invalid input parameters.",
+            tool_name=tool_name,
+            invalid_fields=invalid_fields,
+        )
+
+    try:
+        graph_client = _get_graph_client()
+        group = await graph_client.create_section_group(notebook_id, display_name)
+        return {
+            "id": group.id,
+            "displayName": group.display_name,
+            "notebookId": group.notebook_id,
+            "summary": f"Created section group '{group.display_name}'",
+        }
+    except AuthError as exc:
+        return _make_error_response(category="auth_error", message=str(exc), tool_name=tool_name)
+    except GraphError as exc:
+        return _make_error_response(category="graph_error", message=str(exc), tool_name=tool_name, status_code=exc.status_code)
+    except NetworkError as exc:
+        return _make_error_response(category="network_error", message=str(exc), tool_name=tool_name)
+
+
+@mcp.tool()
+async def create_section_in_group(section_group_id: str, display_name: str) -> dict:
+    """Create a section inside a section group.
+
+    Use this after create_section_group to add sections within a folder.
+    For example, create "Cert DP-700" inside the "Projects" section group.
+
+    Args:
+        section_group_id: The ID of the section group (from create_section_group).
+        display_name: The name for the new section.
+
+    Returns:
+        A dictionary with the created section's id and displayName, or an error.
+    """
+    tool_name = "create_section_in_group"
+
+    invalid_fields: dict[str, str] = {}
+    if not section_group_id or not section_group_id.strip():
+        invalid_fields["section_group_id"] = "sectionGroupId is required and cannot be empty"
+    if not display_name or not display_name.strip():
+        invalid_fields["display_name"] = "displayName is required and cannot be empty"
+
+    if invalid_fields:
+        return _make_error_response(
+            category="validation_error",
+            message="Invalid input parameters.",
+            tool_name=tool_name,
+            invalid_fields=invalid_fields,
+        )
+
+    try:
+        graph_client = _get_graph_client()
+        section = await graph_client.create_section_in_group(section_group_id, display_name)
+        return {
+            "id": section.id,
+            "displayName": section.display_name,
+            "sectionGroupId": section_group_id,
+            "summary": f"Created section '{section.display_name}' in group",
+        }
+    except AuthError as exc:
+        return _make_error_response(category="auth_error", message=str(exc), tool_name=tool_name)
+    except GraphError as exc:
+        return _make_error_response(category="graph_error", message=str(exc), tool_name=tool_name, status_code=exc.status_code)
+    except NetworkError as exc:
+        return _make_error_response(category="network_error", message=str(exc), tool_name=tool_name)
+
+
+@mcp.tool()
 async def delete_page(page_id: str, dry_run: bool = False) -> dict:
     """Delete a page from OneNote.
 

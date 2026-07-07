@@ -24,6 +24,16 @@ class Section:
     id: str
     display_name: str
     notebook_id: str | None = None
+    section_group_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SectionGroup:
+    """A folder-like container within a Notebook that holds sections."""
+
+    id: str
+    display_name: str
+    notebook_id: str | None = None
 
 
 @dataclass(frozen=True)
