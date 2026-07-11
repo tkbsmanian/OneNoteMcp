@@ -501,6 +501,20 @@ This plan implements a Python MCP server using FastMCP, httpx, and MSAL that exp
       python -c "from onenote_organizer.server import list_section_groups, create_section_group, create_section_in_group; print('OK')"
       ```
 
+  - [x] 12.7 Fix page order reversal and image copying `[mandatory]`
+    - clone_page_to_section now downloads embedded images and uploads as multipart form-data
+    - apply_reorganization_plan processes pages in reverse order sequentially (not concurrently)
+    - This ensures pages appear in original order in target section (OneNote puts newest at top)
+    - Sequential processing guarantees deterministic ordering
+    - **Commands executed:**
+      ```bash
+      cd <project-root>
+      # Updated graph_client.py: clone_page_to_section with image download + multipart upload
+      # Updated server.py: apply_reorganization_plan with reversed sequential processing
+      python -c "from onenote_organizer.server import apply_reorganization_plan, clone_page_to_section; print('OK')"
+      .venv/bin/python -c "import ast; ast.parse(open('onenote_organizer/server.py').read()); print('Syntax OK')"
+      ```
+
 ## Notes
 
 - `<project-root>` refers to the cloned repository root directory

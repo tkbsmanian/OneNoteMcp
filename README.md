@@ -447,10 +447,12 @@ Add to `.vscode/mcp.json`:
 The move operation enforces strict verification before deleting the original:
 
 1. **Blank page check** — Pages with no visible text content are skipped (not cloned or deleted)
-2. **Clone verification** — After posting HTML to the target section, the server verifies the new page ID was returned
-3. **Existence check** — The new page is read back via `get_page_metadata` to confirm it's accessible
-4. **Delete only after verification** — The original is only deleted if all three checks pass
-5. **Graceful failure** — If delete fails after a successful clone, the operation still reports success (page exists in target)
+2. **Image download** — All embedded images are downloaded and included as multipart form-data in the clone
+3. **Clone verification** — After posting HTML to the target section, the server verifies the new page ID was returned
+4. **Existence check** — The new page is read back via `get_page_metadata` to confirm it's accessible
+5. **Delete only after verification** — The original is only deleted if all checks pass
+6. **Order preservation** — Pages are processed sequentially in reverse order so they appear in original order in the target
+7. **Graceful failure** — If delete fails after a successful clone, the operation still reports success (page exists in target)
 
 ## Sample Prompts for Organizing with PARA Method
 
@@ -558,11 +560,12 @@ pytest tests/test_unit/test_list_tools.py -v
 
 ## Known Limitations
 
-- **Move = Clone**: Microsoft Graph does not support native page moves. For personal accounts, the server clones the page (reads HTML, posts to target section). The original page remains in place — OneNote does not expose a page delete API via Graph.
+- **Move = Clone + Delete**: Microsoft Graph does not support native page moves. The server clones the page (reads HTML + downloads images, posts as multipart to target section), then deletes the original after verifying the clone exists. Pages are processed sequentially in reverse order to preserve original ordering.
 - **Personal account `copyToSection` 501**: The Graph API's `copyToSection` endpoint returns "OData Feature not implemented" for personal accounts (outlook.com, hotmail.com, live.com). The `clone_page_to_section` tool works around this.
-- **Images/attachments in cloned pages**: Embedded images and file attachments may not transfer when cloning, as they reference resource URLs tied to the original page. Text content and formatting are preserved.
+- **Images in cloned pages**: Embedded images are downloaded from the source page and re-uploaded as multipart form-data. If an individual image download fails, the page is still cloned but that image will show as a broken reference.
+- **Page ordering**: Pages are processed in reverse order (last-to-first) because OneNote places each new page at the top. Processing is sequential (not concurrent) to guarantee deterministic order.
 - **No real-time sync**: The server always fetches fresh data from Graph on each tool call. There is no local cache or push notification support.
-- **Large plans**: For notebooks with hundreds of pages, use `apply_reorganization_plan` with `batch_size` and `offset` parameters to process moves incrementally (default: 10 per batch, 5 concurrent).
+- **Large plans**: For notebooks with hundreds of pages, use `apply_reorganization_plan` with `batch_size` and `offset` parameters to process moves incrementally (default: 10 per batch, sequential for order preservation).
 - **Device code flow only**: The server currently supports device code authentication. Other flows (client credentials, authorization code) can be implemented by swapping the `AuthProvider`.
 
 ## What's Next

@@ -16,7 +16,7 @@ The server is built on the official `mcp` Python SDK (FastMCP) which provides bo
 
 4. **Copy-as-move pattern** — Microsoft Graph's OneNote API does not have a native "move page" operation. Moving a page requires `POST /pages/{id}/copyToSection` followed by polling the operation status. The original page remains in place after copy (OneNote does not support page deletion via API), so the "move" is semantically a copy to target section. This limitation is documented in responses.
 
-5. **Clone-as-move workaround for personal accounts** — The `copyToSection` endpoint returns 501 "OData Feature not implemented" for personal Microsoft accounts. The workaround reads the page HTML (`GET /pages/{id}/content`) and posts it to the target section (`POST /sections/{id}/pages`), then deletes the original after verification. This is the only known working solution for personal accounts.
+5. **Clone-as-move workaround for personal accounts** — The `copyToSection` endpoint returns 501 "OData Feature not implemented" for personal Microsoft accounts. The workaround reads the page HTML (`GET /pages/{id}/content`), downloads all embedded images, and posts everything as multipart/form-data to the target section (`POST /sections/{id}/pages`), then deletes the original after verification. Pages are processed in reverse order sequentially to preserve original ordering (OneNote places newest pages at top).
 
 6. **Section groups for hierarchical organization** — OneNote supports section groups (folders) that contain sections. This enables PARA-style organization where sections are grouped under Projects/, Areas/, Resources/, Archive/ instead of flat prefixed naming.
 

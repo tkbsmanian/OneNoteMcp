@@ -249,3 +249,25 @@ The onenote-organizer is a Model Context Protocol (MCP) server that enables an A
 2. WHEN delete_page is invoked with dryRun set to true, THE MCP_Server SHALL return the projected outcome without deleting.
 3. THE MCP_Server SHALL include the page title in the response summary.
 4. IF the pageId does not correspond to an existing page, THEN THE MCP_Server SHALL return a structured error.
+
+### Requirement 19: Page Order Preservation
+
+**User Story:** As a user, I want moved pages to maintain their original order in the target section, so that my notebook structure stays organized.
+
+#### Acceptance Criteria
+
+1. WHEN pages are moved from a source section to a target section, THE MCP_Server SHALL process them in reverse order (last page first) to ensure the original ordering is preserved in the target.
+2. THE MCP_Server SHALL process page moves sequentially (not concurrently) when order preservation is required.
+3. WHEN the apply_reorganization_plan tool processes a batch of page moves, THE MCP_Server SHALL reverse the batch before processing to maintain source ordering.
+
+### Requirement 20: Image Preservation in Cloned Pages
+
+**User Story:** As a user, I want images in my pages to be preserved when moving between sections, so that I don't lose visual content.
+
+#### Acceptance Criteria
+
+1. WHEN cloning a page, THE MCP_Server SHALL extract all embedded image URLs from the source page HTML.
+2. THE MCP_Server SHALL download each image using the authenticated Graph API client.
+3. THE MCP_Server SHALL replace image URLs in the HTML with multipart reference names (e.g., "name:image1").
+4. THE MCP_Server SHALL upload the page as multipart/form-data including the HTML and all downloaded images as separate parts.
+5. IF an individual image download fails, THEN THE MCP_Server SHALL continue with the clone (the page is still cloned but that image will show as a broken reference).
