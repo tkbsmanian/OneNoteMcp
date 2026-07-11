@@ -1387,9 +1387,13 @@ async def apply_reorganization_plan(
     batch_end = min(offset + batch_size, len(page_moves))
     batch_moves = page_moves[offset:batch_end]
 
-    # Process page moves concurrently (up to 5 at a time)
-    semaphore = asyncio.Semaphore(5)
+    # Reverse the batch so pages end up in original order in the target section.
+    # OneNote places newly created pages at the top, so processing in reverse
+    # ensures the first page in the list ends up on top.
+    batch_moves = list(reversed(batch_moves))
 
+    # Process page moves sequentially to preserve page ordering.
+    # (Concurrent execution would result in unpredictable page order in the target section)
     async def move_one_page(move_spec: dict) -> tuple[bool, str | None]:
         """Move a single page. Returns (success, error_message_or_None)."""
         page_id = move_spec["pageId"]
@@ -1408,32 +1412,24 @@ async def apply_reorganization_plan(
                 f"target section '{target_display_name}' not found in created sections"
             )
 
-        async with semaphore:
+        try:
+            new_page_id = await graph_client.clone_page_to_section(
+                page_id, target_section_id
+            )
+            # Delete original after verified clone
             try:
-                operation_url = await graph_client.copy_page_to_section(
-                    page_id, target_section_id
-                )
-                operation_result = await graph_client.poll_operation(operation_url)
+                await graph_client.delete_page(page_id)
+            except (GraphError, NetworkError):
+                pass  # Clone succeeded, delete failed — acceptable
+            return True, None
+        except (GraphError, NetworkError) as exc:
+            return False, (
+                f"Failed to move page '{page_id}' to '{target_display_name}': {exc}"
+            )
 
-                if operation_result.status == "completed":
-                    return True, None
-                else:
-                    error_msg = operation_result.error_message or "Move operation failed"
-                    return False, (
-                        f"Failed to move page '{page_id}' to '{target_display_name}': {error_msg}"
-                    )
-            except (GraphError, NetworkError) as exc:
-                return False, (
-                    f"Failed to move page '{page_id}' to '{target_display_name}': {exc}"
-                )
-
-    # Execute batch concurrently
-    results = await asyncio.gather(
-        *(move_one_page(move_spec) for move_spec in batch_moves),
-        return_exceptions=False,
-    )
-
-    for success, error_msg in results:
+    # Execute batch sequentially (preserves page order)
+    for move_spec in batch_moves:
+        success, error_msg = await move_one_page(move_spec)
         if success:
             pages_moved += 1
         elif error_msg:

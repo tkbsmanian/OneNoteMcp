@@ -369,8 +369,9 @@ class GraphClient:
         """Clone a page to a different section by reading HTML and re-posting it.
 
         This is the workaround for personal Microsoft accounts where copyToSection
-        returns 501 "OData Feature not implemented". It reads the full page HTML
-        and creates a new page in the target section with that content.
+        returns 501 "OData Feature not implemented". It reads the full page HTML,
+        downloads embedded images, and creates a new page in the target section
+        with the content and images as a multipart request.
 
         Safety: Verifies the new page was created successfully before returning.
 
@@ -386,12 +387,13 @@ class GraphClient:
                 cloned page cannot be verified.
             NetworkError: If a timeout or connection error occurs.
         """
+        import re
+        import uuid as uuid_mod
+
         # Step 1: Read the source page's full HTML content
         html_content = await self.get_page_content(page_id)
 
         # Step 1b: Check if page has meaningful content (not blank)
-        # Strip HTML tags and check if there's any visible text
-        import re
         visible_text = re.sub(r"<[^>]+>", "", html_content).strip()
         if not visible_text:
             raise GraphError(
@@ -399,16 +401,91 @@ class GraphClient:
                 status_code=None,
             )
 
-        # Step 2: Post the HTML to the destination section to create a new page
-        url = f"{self.BASE_URL}/me/onenote/sections/{target_section_id}/pages"
-        response = await self._request(
-            "POST",
-            url,
-            content=html_content.encode("utf-8"),
-            headers={"Content-Type": "text/html"},
+        # Step 2: Extract image URLs from HTML and download them
+        # OneNote images are referenced as src="https://graph.microsoft.com/..." 
+        # or src="name:image_name" for multipart references
+        img_pattern = re.compile(
+            r'<img[^>]+src="(https://[^"]+)"[^>]*>', re.IGNORECASE
         )
+        image_urls = img_pattern.findall(html_content)
 
-        # Step 3: Extract the new page ID from the response
+        # Download images and build multipart parts
+        image_parts: list[tuple[str, bytes, str]] = []  # (part_name, data, content_type)
+        
+        for i, img_url in enumerate(image_urls):
+            try:
+                token = await self._auth.get_access_token()
+                img_response = await self._client.get(
+                    img_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30.0,
+                )
+                if img_response.status_code == 200:
+                    content_type = img_response.headers.get("content-type", "image/png")
+                    part_name = f"image{i+1}"
+                    image_parts.append((part_name, img_response.content, content_type))
+                    # Replace the URL in HTML with a multipart reference
+                    html_content = html_content.replace(
+                        img_url, f"name:{part_name}"
+                    )
+            except Exception:
+                # If image download fails, leave the original URL (image won't show)
+                pass
+
+        # Step 3: Post to the destination section
+        url = f"{self.BASE_URL}/me/onenote/sections/{target_section_id}/pages"
+
+        if image_parts:
+            # Use multipart/form-data when there are images
+            boundary = f"OneNoteBoundary{uuid_mod.uuid4().hex[:12]}"
+            
+            # Build multipart body manually
+            body_parts: list[bytes] = []
+            
+            # Part 1: HTML content (Presentation part)
+            body_parts.append(f"--{boundary}\r\n".encode())
+            body_parts.append(
+                b'Content-Disposition: form-data; name="Presentation"\r\n'
+            )
+            body_parts.append(b"Content-Type: text/html\r\n\r\n")
+            body_parts.append(html_content.encode("utf-8"))
+            body_parts.append(b"\r\n")
+            
+            # Image parts
+            for part_name, img_data, img_content_type in image_parts:
+                body_parts.append(f"--{boundary}\r\n".encode())
+                body_parts.append(
+                    f'Content-Disposition: form-data; name="{part_name}"\r\n'.encode()
+                )
+                body_parts.append(
+                    f"Content-Type: {img_content_type}\r\n\r\n".encode()
+                )
+                body_parts.append(img_data)
+                body_parts.append(b"\r\n")
+            
+            # Closing boundary
+            body_parts.append(f"--{boundary}--\r\n".encode())
+            
+            multipart_body = b"".join(body_parts)
+            
+            response = await self._request(
+                "POST",
+                url,
+                content=multipart_body,
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary}"
+                },
+            )
+        else:
+            # Simple HTML post when no images
+            response = await self._request(
+                "POST",
+                url,
+                content=html_content.encode("utf-8"),
+                headers={"Content-Type": "text/html"},
+            )
+
+        # Step 4: Extract the new page ID from the response
         new_page_id = ""
         try:
             data = response.json()
@@ -416,14 +493,14 @@ class GraphClient:
         except (ValueError, KeyError):
             pass
 
-        # Step 4: Verify the new page actually exists
+        # Step 5: Verify the new page actually exists
         if not new_page_id:
             raise GraphError(
                 message="Clone failed — no new page ID returned from Graph API",
                 status_code=None,
             )
 
-        # Step 5: Verify the new page is accessible (exists and has content)
+        # Step 6: Verify the new page is accessible
         try:
             new_page_meta = await self.get_page_metadata(new_page_id)
             if not new_page_meta.id:
